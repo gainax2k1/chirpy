@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,13 +22,15 @@ func main() {
 	// It decides which handler should process requests for different URL paths.
 	mux := http.NewServeMux()
 	var cfg apiConfig
+
 	// Actually makes the server that listens on port 8080 and uses the mux that was just created.
 	newServer := http.Server{
 		Addr:    ":8080",
 		Handler: mux,
 	}
 
-	// Tells tbe mux that any request starting with "/" should be handled by a fileserver serving from the current directory.
+	// Tells tbe mux that any request starting with "/" should be handled by a fileserver serving from
+	// the current directory.
 	//  This allows files like "index.html" (and other static files) to be served for most requests.
 	// first version:
 	// mux.Handle("/", http.FileServer(http.Dir(".")))
@@ -50,6 +53,7 @@ func main() {
 
 	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats)
 	mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset)
+	mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err := newServer.ListenAndServe()
@@ -109,5 +113,79 @@ func (cfg *apiConfig) middlewareMetricsReset(w http.ResponseWriter, req *http.Re
 	cfg.fileserverHits.Store(0)
 	returnHits := fmt.Sprint("Hits reset: ", cfg.fileserverHits.Load())
 	w.Write([]byte(returnHits)) // << expects []byte, so type convert to have "OK" (for now)
+
+}
+
+func (cfg *apiConfig) middlewareMetricsValidate(w http.ResponseWriter, req *http.Request) { // ******
+	// all copied, don't trust below
+
+	// DECODE JSON REQUEST BODY:
+
+	type parameters struct {
+		// these tags indicate how the keys in the JSON should be mapped to the struct fields
+		// the struct fields must be exported (start with a capital letter) if you want them parsed
+		Body string `json:"body"`
+	}
+
+	type response struct {
+		Valid bool `json:"valid"`
+	}
+	type errResponse struct {
+		Error string `json:"error"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+
+		log.Printf("Error decoding parameters: %s", err)
+
+		// Create an error response and send it back
+		errorResp := errResponse{Error: "Invalid JSON"}
+		jsonBytes, marshalErr := json.Marshal(errorResp)
+		if marshalErr != nil {
+			// If we can't even marshal the error, just send a plain 500
+			w.WriteHeader(500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400) // or 500, depending on what you prefer
+		w.Write(jsonBytes)
+		return
+	}
+
+	// params is a struct with data populated successfully
+
+	characterCount := len(params.Body)
+
+	fmt.Printf("Character count using len: %v", characterCount)
+	// ABove  this is correct/working
+
+	// ENCODE JSON RESPONSE BODY:
+
+	if characterCount > 140 { //invalid case
+		resp := errResponse{Error: "Chirp is too long"}
+		jsonBytes, err := json.Marshal(resp)
+		if err != nil {
+			fmt.Printf("error marshalling over 140: %v\n", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		w.Write(jsonBytes)
+		return
+	}
+
+	resp := response{Valid: true}
+	jsonBytes, err := json.Marshal(resp)
+	if err != nil {
+		fmt.Printf("eror marshalling valid: %v\n", err)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(jsonBytes)
+	return
 
 }
