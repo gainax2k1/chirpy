@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -50,7 +51,6 @@ func main() {
 	// old: mux.HandleFunc("/healthz", readiness(http.ResponseWriter, *http.Request)) WRONG!
 	// new:
 	mux.HandleFunc("GET /api/healthz", readiness) // correct!
-
 	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats)
 	mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset)
 	mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate)
@@ -79,8 +79,8 @@ func readiness(w http.ResponseWriter, req *http.Request) {
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	/*
 		THIS DOESN'T WORK! it only runs ONCE at startup!
-		cfg.fileserverHits.Add(1) // should increment by 1 safely
-		return next
+		- cfg.fileserverHits.Add(1) // should increment by 1 safely
+		- return next
 	*/
 	//correct code: we return our modified hanlder at startup.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,44 +116,34 @@ func (cfg *apiConfig) middlewareMetricsReset(w http.ResponseWriter, req *http.Re
 
 }
 
+type parameters struct {
+	// these tags indicate how the keys in the JSON should be mapped to the struct fields
+	// the struct fields must be exported (start with a capital letter) if you want them parsed
+	Body string `json:"body"`
+}
+
+type response struct {
+	Valid bool `json:"valid"`
+}
+
+type errResponse struct {
+	Error string `json:"error"`
+}
+
+type cleanResponse struct {
+	Clean string `json:"cleaned_body"`
+}
+
 func (cfg *apiConfig) middlewareMetricsValidate(w http.ResponseWriter, req *http.Request) { // ******
-	// all copied, don't trust below
 
 	// DECODE JSON REQUEST BODY:
-
-	type parameters struct {
-		// these tags indicate how the keys in the JSON should be mapped to the struct fields
-		// the struct fields must be exported (start with a capital letter) if you want them parsed
-		Body string `json:"body"`
-	}
-
-	type response struct {
-		Valid bool `json:"valid"`
-	}
-	type errResponse struct {
-		Error string `json:"error"`
-	}
 
 	decoder := json.NewDecoder(req.Body)
 	params := parameters{}
 
 	err := decoder.Decode(&params)
 	if err != nil {
-
-		log.Printf("Error decoding parameters: %s", err)
-
-		// Create an error response and send it back
-		errorResp := errResponse{Error: "Invalid JSON"}
-		jsonBytes, marshalErr := json.Marshal(errorResp)
-		if marshalErr != nil {
-			// If we can't even marshal the error, just send a plain 500
-			w.WriteHeader(500)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400) // or 500, depending on what you prefer
-		w.Write(jsonBytes)
+		respondWithError(w, 500, "Error decoding params")
 		return
 	}
 
@@ -167,25 +157,57 @@ func (cfg *apiConfig) middlewareMetricsValidate(w http.ResponseWriter, req *http
 	// ENCODE JSON RESPONSE BODY:
 
 	if characterCount > 140 { //invalid case
-		resp := errResponse{Error: "Chirp is too long"}
-		jsonBytes, err := json.Marshal(resp)
-		if err != nil {
-			fmt.Printf("error marshalling over 140: %v\n", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
-		w.Write(jsonBytes)
+		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
 
-	resp := response{Valid: true}
-	jsonBytes, err := json.Marshal(resp)
-	if err != nil {
-		fmt.Printf("eror marshalling valid: %v\n", err)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	w.Write(jsonBytes)
-	return
+	respondClean(w, filterProfanity(params.Body))
+}
 
+func filterProfanity(body string) string {
+	profanity := []string{"kerfuffle", "sharbert", "fornax"}
+	replaceString := "****"
+
+	wordSlice := strings.Split(body, " ")
+
+	for i, word := range wordSlice {
+		for _, profane := range profanity {
+			if strings.ToLower(word) == profane {
+				wordSlice[i] = replaceString // NEED TO USE INDEX! Otherwise, word is a *copy* of the value
+			}
+		}
+	}
+
+	return strings.Join(wordSlice, " ")
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+
+	resp := errResponse{Error: msg}
+	jsonWriter(w, code, resp)
+}
+
+func respondWithValid(w http.ResponseWriter) {
+	resp := response{Valid: true}
+	jsonWriter(w, 200, resp)
+}
+
+func respondClean(w http.ResponseWriter, cleanBody string) {
+	resp := cleanResponse{Clean: cleanBody}
+	jsonWriter(w, 200, resp)
+}
+
+func jsonWriter(w http.ResponseWriter, code int, payload interface{}) {
+
+	jsonBytes, err := json.Marshal(payload)
+
+	if err != nil {
+		fmt.Printf("error marshalling response: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError) // auto handles setting header to 500 and body to error
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(jsonBytes)
 }
