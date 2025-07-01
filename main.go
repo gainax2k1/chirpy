@@ -1,28 +1,56 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/gainax2k1/chirpy/internal/database"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
+	db             *database.Queries
 	fileserverHits atomic.Int32
 	/*
 		The atomic.Int32 type is a really cool standard-library type that allows us
 		to safely increment and read an integer value across multiple goroutines
 		(HTTP requests).
 	*/
+
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println("error opening sql: ", err)
+		os.Exit(1)
+
+	}
+	defer db.Close()
+
+	dbQueries := database.New(db)
+
+	cfg := &apiConfig{
+		db: dbQueries,
+	}
+
 	// This creates a "multiplexer"—a router for incoming HTTP requests.
 	// It decides which handler should process requests for different URL paths.
 	mux := http.NewServeMux()
-	var cfg apiConfig
 
 	// Actually makes the server that listens on port 8080 and uses the mux that was just created.
 	newServer := http.Server{
@@ -56,7 +84,7 @@ func main() {
 	mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
-	err := newServer.ListenAndServe()
+	err = newServer.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
