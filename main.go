@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/gainax2k1/chirpy/internal/database"
+	"github.com/google/uuid"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -24,7 +27,46 @@ type apiConfig struct {
 		to safely increment and read an integer value across multiple goroutines
 		(HTTP requests).
 	*/
+	platform string
+}
 
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+type CreateUserRequest struct {
+	Email string `json:"email"`
+}
+
+type CreateChirp struct {
+	Body    string    `json:"body"`
+	User_ID uuid.UUID `json:"user_id"`
+}
+
+/*
+type parameters struct { // old struct for old validate handler, replaced with CreateChirp above
+
+		// these tags indicate how the keys in the JSON should be mapped to the struct fields
+		// the struct fields must be exported (start with a capital letter) if you want them parsed
+		Body string `json:"body"`
+	}
+*/
+type errResponse struct {
+	Error string `json:"error"`
+}
+
+type cleanResponse struct {
+	Clean string `json:"cleaned_body"`
 }
 
 func main() {
@@ -34,6 +76,7 @@ func main() {
 	}
 
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println("error opening sql: ", err)
@@ -45,7 +88,8 @@ func main() {
 	dbQueries := database.New(db)
 
 	cfg := &apiConfig{
-		db: dbQueries,
+		db:       dbQueries,
+		platform: platform,
 	}
 
 	// This creates a "multiplexer"—a router for incoming HTTP requests.
@@ -78,10 +122,14 @@ func main() {
 
 	// old: mux.HandleFunc("/healthz", readiness(http.ResponseWriter, *http.Request)) WRONG!
 	// new:
+	mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsHandlerReset)
 	mux.HandleFunc("GET /api/healthz", readiness) // correct!
 	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats)
-	mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset)
-	mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate)
+	//mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset) //old reset that reset the page view counter
+	//mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate) // old seperate validate case
+	mux.HandleFunc("POST /api/chirps", cfg.middlewareMetricsCreateChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.middlewareMetricsGetChirps)
+	mux.HandleFunc("POST /api/users", cfg.middlewareMetricsCreateUser)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -102,6 +150,20 @@ func readiness(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(200)                                          // status code
 	w.Write([]byte("OK"))                                       // << expects []byte, so type convert to have "OK" (for now)
 
+}
+
+func (cfg *apiConfig) middlewareMetricsHandlerReset(w http.ResponseWriter, req *http.Request) { // **** UNDER CONSTRUCTION! ****
+	if cfg.platform != "dev" {
+		// 403 Forbidden
+		respondWithError(w, 403, "Forbidden")
+		return
+	}
+	err := cfg.db.Reset(context.Background())
+	if err != nil {
+		respondWithError(w, 400, "Bad Request")
+	}
+	fmt.Printf("Database successfully reset.")
+	return
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -135,39 +197,55 @@ func (cfg *apiConfig) middlewareMetricsStats(w http.ResponseWriter, req *http.Re
 
 }
 
-func (cfg *apiConfig) middlewareMetricsReset(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8") // normal header
-	w.WriteHeader(200)                                          // status code
-	cfg.fileserverHits.Store(0)
-	returnHits := fmt.Sprint("Hits reset: ", cfg.fileserverHits.Load())
-	w.Write([]byte(returnHits)) // << expects []byte, so type convert to have "OK" (for now)
+/*
+	OLD RESET - reset page hit-counter
+
+	func (cfg *apiConfig) middlewareMetricsReset(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8") // normal header
+		w.WriteHeader(200)                                          // status code
+		cfg.fileserverHits.Store(0)
+		returnHits := fmt.Sprint("Hits reset: ", cfg.fileserverHits.Load())
+		w.Write([]byte(returnHits)) // << expects []byte, so type convert to have "OK" (for now)
 
 }
+*/
 
-type parameters struct {
-	// these tags indicate how the keys in the JSON should be mapped to the struct fields
-	// the struct fields must be exported (start with a capital letter) if you want them parsed
-	Body string `json:"body"`
+func (cfg *apiConfig) middlewareMetricsCreateUser(w http.ResponseWriter, req *http.Request) {
+	// DECODE JSON REQUEST BODY:
+
+	decoder := json.NewDecoder(req.Body)
+	newUserParams := CreateUserRequest{}
+
+	err := decoder.Decode(&newUserParams)
+	if err != nil {
+		respondWithError(w, 500, "Error decoding params")
+		return
+	}
+
+	newUserRecord, err := cfg.db.CreateUser(context.Background(), newUserParams.Email)
+
+	if err != nil {
+		//error creating new user
+		respondWithError(w, 500, "error creating user")
+		return
+	}
+
+	mainUser := User{ // converting to ensure security (not exposing sql field names, allows not returning specific values, like potential password, etc)
+		ID:        newUserRecord.ID,
+		CreatedAt: newUserRecord.CreatedAt,
+		UpdatedAt: newUserRecord.UpdatedAt,
+		Email:     newUserRecord.Email,
+	}
+
+	jsonWriter(w, 201, mainUser)
+	//return
 }
-
-type response struct {
-	Valid bool `json:"valid"`
-}
-
-type errResponse struct {
-	Error string `json:"error"`
-}
-
-type cleanResponse struct {
-	Clean string `json:"cleaned_body"`
-}
-
-func (cfg *apiConfig) middlewareMetricsValidate(w http.ResponseWriter, req *http.Request) { // ******
+func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *http.Request) {
 
 	// DECODE JSON REQUEST BODY:
 
 	decoder := json.NewDecoder(req.Body)
-	params := parameters{}
+	params := CreateChirp{}
 
 	err := decoder.Decode(&params)
 	if err != nil {
@@ -180,7 +258,6 @@ func (cfg *apiConfig) middlewareMetricsValidate(w http.ResponseWriter, req *http
 	characterCount := len(params.Body)
 
 	fmt.Printf("Character count using len: %v", characterCount)
-	// ABove  this is correct/working
 
 	// ENCODE JSON RESPONSE BODY:
 
@@ -188,8 +265,50 @@ func (cfg *apiConfig) middlewareMetricsValidate(w http.ResponseWriter, req *http
 		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
+	// At this point, CHIRP is good to go:
+	var chirpParams database.CreateChirpParams
+	chirpParams.Body = filterProfanity(params.Body) // not sure if we're still filtering, but this would be teh place to do so
+	chirpParams.UserID = params.User_ID
 
-	respondClean(w, filterProfanity(params.Body))
+	dbChirp, err := cfg.db.CreateChirp(context.Background(), chirpParams)
+	if err != nil {
+		respondWithError(w, 500, "error creating chirp")
+		return
+	}
+
+	mainChirp := Chirp{ // converting to ensure security (not exposing sql field names, allows not returning specific values, like potential password, etc)
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+
+	jsonWriter(w, 201, mainChirp)
+	//return
+}
+
+func (cfg *apiConfig) middlewareMetricsGetChirps(w http.ResponseWriter, req *http.Request) {
+	chirpsSlice, err := cfg.db.GetChirps(context.Background())
+	if err != nil {
+		respondWithError(w, 500, "error retrieving chirps")
+		return
+	}
+
+	var chirpsMainSlice []Chirp
+
+	for _, chirp := range chirpsSlice {
+
+		chirpsMainSlice = append(chirpsMainSlice, Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
+
+	}
+	jsonWriter(w, 200, chirpsMainSlice)
 }
 
 func filterProfanity(body string) string {
@@ -213,11 +332,6 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 
 	resp := errResponse{Error: msg}
 	jsonWriter(w, code, resp)
-}
-
-func respondWithValid(w http.ResponseWriter) {
-	resp := response{Valid: true}
-	jsonWriter(w, 200, resp)
 }
 
 func respondClean(w http.ResponseWriter, cleanBody string) {
