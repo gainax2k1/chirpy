@@ -130,6 +130,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", cfg.middlewareMetricsCreateChirps)
 	mux.HandleFunc("GET /api/chirps", cfg.middlewareMetricsGetChirps)
 	mux.HandleFunc("POST /api/users", cfg.middlewareMetricsCreateUser)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.middlewareMetricsGetChirp)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -288,6 +289,34 @@ func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *
 	//return
 }
 
+func (cfg *apiConfig) middlewareMetricsGetChirp(w http.ResponseWriter, req *http.Request) {
+	chirpIDString := req.PathValue("chirpID") // pulls the chirp id from the path string as a STRING
+	fmt.Println(chirpIDString)
+
+	chirpUUID, err := uuid.Parse(chirpIDString) // converts the string into a UUID
+	if err != nil {
+		respondWithError(w, 500, "UUID error")
+		return
+	}
+
+	dbChirp, err := cfg.db.GetChirpByChirpUUID(context.Background(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 404, "chirp not found")
+		return
+	}
+
+	mainChirp := Chirp{ // converting to ensure security (not exposing sql field names, allows not returning specific values, like potential password, etc)
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+
+	jsonWriter(w, 200, mainChirp)
+
+}
+
 func (cfg *apiConfig) middlewareMetricsGetChirps(w http.ResponseWriter, req *http.Request) {
 	chirpsSlice, err := cfg.db.GetChirps(context.Background())
 	if err != nil {
@@ -332,11 +361,6 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 
 	resp := errResponse{Error: msg}
 	jsonWriter(w, code, resp)
-}
-
-func respondClean(w http.ResponseWriter, cleanBody string) {
-	resp := cleanResponse{Clean: cleanBody}
-	jsonWriter(w, 200, resp)
 }
 
 func jsonWriter(w http.ResponseWriter, code int, payload interface{}) {
