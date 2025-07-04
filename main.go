@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gainax2k1/chirpy/internal/auth"
 	"github.com/gainax2k1/chirpy/internal/database"
 	"github.com/google/uuid"
 
@@ -45,7 +46,8 @@ type Chirp struct {
 }
 
 type CreateUserRequest struct {
-	Email string `json:"email"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type CreateChirp struct {
@@ -63,10 +65,6 @@ type parameters struct { // old struct for old validate handler, replaced with C
 */
 type errResponse struct {
 	Error string `json:"error"`
-}
-
-type cleanResponse struct {
-	Clean string `json:"cleaned_body"`
 }
 
 func main() {
@@ -131,6 +129,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", cfg.middlewareMetricsGetChirps)
 	mux.HandleFunc("POST /api/users", cfg.middlewareMetricsCreateUser)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.middlewareMetricsGetChirp)
+	mux.HandleFunc("POST /api/login", cfg.middlewareMetricsLoginUser)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -222,8 +221,17 @@ func (cfg *apiConfig) middlewareMetricsCreateUser(w http.ResponseWriter, req *ht
 		respondWithError(w, 500, "Error decoding params")
 		return
 	}
+	newUserParams.Password, err = auth.HashPassword(newUserParams.Password)
+	if err != nil {
+		respondWithError(w, 500, "error creating password")
+		return
+	}
 
-	newUserRecord, err := cfg.db.CreateUser(context.Background(), newUserParams.Email)
+	var createUserParams database.CreateUserParams
+	createUserParams.Email = newUserParams.Email
+	createUserParams.HashedPassword = newUserParams.Password
+
+	newUserRecord, err := cfg.db.CreateUser(context.Background(), createUserParams)
 
 	if err != nil {
 		//error creating new user
@@ -241,6 +249,42 @@ func (cfg *apiConfig) middlewareMetricsCreateUser(w http.ResponseWriter, req *ht
 	jsonWriter(w, 201, mainUser)
 	//return
 }
+
+func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *http.Request) {
+
+	// DECODE JSON REQUEST BODY:
+
+	decoder := json.NewDecoder(req.Body)
+	userLoginParams := CreateUserRequest{} // struct with email and password
+
+	err := decoder.Decode(&userLoginParams)
+	if err != nil {
+		respondWithError(w, 500, "Error decoding params")
+		return
+	}
+	dbUserRecord, err := cfg.db.GetUserByEmail(context.Background(), userLoginParams.Email)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	err = auth.CheckPasswordHash(userLoginParams.Password, dbUserRecord.HashedPassword)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	mainUser := User{ // converting to ensure security (not exposing sql field names, allows not returning specific values, like potential password, etc)
+		ID:        dbUserRecord.ID,
+		CreatedAt: dbUserRecord.CreatedAt,
+		UpdatedAt: dbUserRecord.UpdatedAt,
+		Email:     dbUserRecord.Email,
+	}
+
+	jsonWriter(w, 200, mainUser)
+	//return
+
+}
+
 func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *http.Request) {
 
 	// DECODE JSON REQUEST BODY:
