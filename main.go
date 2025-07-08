@@ -55,14 +55,6 @@ type CreateChirp struct {
 	User_ID uuid.UUID `json:"user_id"`
 }
 
-/*
-type parameters struct { // old struct for old validate handler, replaced with CreateChirp above
-
-		// these tags indicate how the keys in the JSON should be mapped to the struct fields
-		// the struct fields must be exported (start with a capital letter) if you want them parsed
-		Body string `json:"body"`
-	}
-*/
 type errResponse struct {
 	Error string `json:"error"`
 }
@@ -163,7 +155,7 @@ func (cfg *apiConfig) middlewareMetricsHandlerReset(w http.ResponseWriter, req *
 		respondWithError(w, 400, "Bad Request")
 	}
 	fmt.Printf("Database successfully reset.")
-	return
+	//return
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
