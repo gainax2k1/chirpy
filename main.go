@@ -29,6 +29,7 @@ type apiConfig struct {
 		(HTTP requests).
 	*/
 	platform string
+	secret   string
 }
 
 type User struct {
@@ -36,6 +37,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 type Chirp struct {
 	ID        uuid.UUID `json:"id"`
@@ -46,8 +48,9 @@ type Chirp struct {
 }
 
 type CreateUserRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	ExpireTime int    `json:"expires_in_seconds"`
 }
 
 type CreateChirp struct {
@@ -67,6 +70,7 @@ func main() {
 
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println("error opening sql: ", err)
@@ -80,6 +84,7 @@ func main() {
 	cfg := &apiConfig{
 		db:       dbQueries,
 		platform: platform,
+		secret:   secret,
 	}
 
 	// This creates a "multiplexer"—a router for incoming HTTP requests.
@@ -247,19 +252,38 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 	// DECODE JSON REQUEST BODY:
 
 	decoder := json.NewDecoder(req.Body)
-	userLoginParams := CreateUserRequest{} // struct with email and password
-
+	userLoginParams := CreateUserRequest{}                    // struct with email and password
+	fmt.Println("Decoded login parameters:", userLoginParams) // debug
 	err := decoder.Decode(&userLoginParams)
 	if err != nil {
 		respondWithError(w, 500, "Error decoding params")
 		return
 	}
+	fmt.Println("Decoded login parameters:", userLoginParams) // debug
+	if userLoginParams.ExpireTime == 0 || userLoginParams.ExpireTime > 3600 {
+		userLoginParams.ExpireTime = 3600 //one hour
+	}
+
+	expires := time.Duration(userLoginParams.ExpireTime) * time.Second
+
 	dbUserRecord, err := cfg.db.GetUserByEmail(context.Background(), userLoginParams.Email)
 	if err != nil {
-		respondWithError(w, 401, "Unauthorized")
+		respondWithError(w, 401, "Unauthorize (getuserbyemail failed)")
 		return
 	}
+
+	fmt.Println("Database user lookup error:", err) // after DB lookup debug
 	err = auth.CheckPasswordHash(userLoginParams.Password, dbUserRecord.HashedPassword)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized (checkpasswordhash failed)")
+		return
+	}
+
+	fmt.Println("Password hash check error:", err) // after password check debug
+	token, err := auth.MakeJWT(dbUserRecord.ID, cfg.secret, expires)
+	fmt.Println("JWT created:", token, "JWT creation error:", err) // after JWT creation
+
+	//token, err := auth.GetBearerToken(req.Header) // WRONG
 	if err != nil {
 		respondWithError(w, 401, "Unauthorized")
 		return
@@ -270,6 +294,7 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 		CreatedAt: dbUserRecord.CreatedAt,
 		UpdatedAt: dbUserRecord.UpdatedAt,
 		Email:     dbUserRecord.Email,
+		Token:     token,
 	}
 
 	jsonWriter(w, 200, mainUser)
@@ -291,6 +316,17 @@ func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *
 	}
 
 	// params is a struct with data populated successfully
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	userIDVerified, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
 
 	characterCount := len(params.Body)
 
@@ -305,7 +341,7 @@ func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *
 	// At this point, CHIRP is good to go:
 	var chirpParams database.CreateChirpParams
 	chirpParams.Body = filterProfanity(params.Body) // not sure if we're still filtering, but this would be teh place to do so
-	chirpParams.UserID = params.User_ID
+	chirpParams.UserID = userIDVerified
 
 	dbChirp, err := cfg.db.CreateChirp(context.Background(), chirpParams)
 	if err != nil {

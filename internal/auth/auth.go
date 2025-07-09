@@ -2,6 +2,8 @@ package auth
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5" // go get -u github.com/golang-jwt/jwt/v5
@@ -26,7 +28,6 @@ func HashPassword(password string) (string, error) {
 }
 
 func CheckPasswordHash(password, hash string) error {
-	// func CompareHashAndPassword(hashedPassword, password []byte) error
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	if err != nil {
 		return fmt.Errorf("password does not match: %w", err)
@@ -39,7 +40,7 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	//Create a variable to hold the "claims"—the standard fields about the token and user.
 	var newClaims jwt.RegisteredClaims
 
-	// Set the Issuer field, declaring who made this token—your app.
+	// Set the Issuer field, declaring who made this token — here, the "chirpy" app.
 	newClaims.Issuer = "chirpy"
 
 	// Set the IssuedAt field to the current UTC time (when the token was created).
@@ -62,7 +63,8 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 
 	//Sign (cryptographically seal) the token using your secret.
 	// This produces a "JWT string"—just a base64 string you can hand out.
-	jwtString, err := newToken.SignedString(tokenSecret)
+	jwtString, err := newToken.SignedString([]byte(tokenSecret)) // secret needs to be []byte, not string
+	//jwtString, err := newToken.SignedString(tokenSecret) //WRONG!
 	if err != nil {
 		return "", fmt.Errorf("error signing token: %w", err)
 	}
@@ -104,4 +106,36 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return uuid.UUID{}, fmt.Errorf("error parsing userUUID: %w", err)
 	}
 	return userUUIDUUID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	// Auth information will come into our server in the Authorization header:
+	// Bearer TOKEN_STRING
+	/*
+		This function should look for the Authorization header in the headers parameter and
+		return the TOKEN_STRING if it exists (stripping off the Bearer prefix and whitespace).
+		If the header doesn't exist, return an error.
+	*/
+
+	tokenStringHeader := headers.Get("Authorization") // get the first item with this key
+	if tokenStringHeader == "" {
+		return "", fmt.Errorf("unable to retrieve authorization header")
+	}
+
+	tokenStringHeader = strings.TrimSpace(tokenStringHeader) // trim leading whitespace
+
+	if !strings.HasPrefix(tokenStringHeader, "Bearer ") { // checks for proper header leader.
+		//  Note, "space" after Bearer to make sure that's all that's there,
+		//  not something like "BearerToken" which would be invalid
+		return "", fmt.Errorf("invalid authorization header")
+
+	}
+
+	token := strings.TrimPrefix(tokenStringHeader, "Bearer")
+
+	token = strings.TrimSpace(token)
+	if len(token) < 30 {
+		return "", fmt.Errorf("invalid token")
+	}
+	return token, nil
 }
