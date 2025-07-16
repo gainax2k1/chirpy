@@ -8,7 +8,7 @@ VALUES (
 RETURNING *;
 
 -- name: GetUserByRefreshToken :one
-SELECT user_id
+SELECT *
     FROM refresh_tokens
     WHERE token = $1;
 

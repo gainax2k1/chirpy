@@ -63,6 +63,10 @@ type errResponse struct {
 	Error string `json:"error"`
 }
 
+type tokenResponse struct {
+	Token string `json:"token"`
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -128,6 +132,8 @@ func main() {
 	mux.HandleFunc("POST /api/users", cfg.middlewareMetricsCreateUser)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.middlewareMetricsGetChirp)
 	mux.HandleFunc("POST /api/login", cfg.middlewareMetricsLoginUser)
+	mux.HandleFunc("POST /api/refresh", cfg.middlewareMetricsRefresh)
+	mux.HandleFunc("POST /api/revoke", cfg.middlewareMetricsRevoke)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -297,7 +303,9 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 
 	_, err = cfg.db.CreateRefreshToken(context.Background(), newRefreshTokenParams)
 	if err != nil {
-		respondWithError(w, 500, "error creating refresh token in database")
+		// Let's print the actual error from the database!
+		fmt.Printf("Database error creating refresh token: %v\n", err)       // <--- Add this print statement!
+		respondWithError(w, 500, "error creating refresh token in database") // Keep this for user response
 		return
 	}
 
@@ -423,6 +431,54 @@ func (cfg *apiConfig) middlewareMetricsGetChirps(w http.ResponseWriter, req *htt
 
 	}
 	jsonWriter(w, 200, chirpsMainSlice)
+}
+
+func (cfg *apiConfig) middlewareMetricsRefresh(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	refreshTokenRecord, err := cfg.db.GetUserByRefreshToken(context.Background(), token)
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	if refreshTokenRecord.ExpiresAt.Compare(time.Now()) < 0 {
+		//revoke call () //not implimented yet
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+	if refreshTokenRecord.RevokedAt.Valid {
+		//revoke call () //not implimented yet
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	jwtToken, err := auth.MakeJWT(refreshTokenRecord.UserID, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	returnJWTToken := tokenResponse{
+		Token: jwtToken,
+	}
+
+	jsonWriter(w, 200, returnJWTToken)
+}
+
+func (cfg *apiConfig) middlewareMetricsRevoke(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+	cfg.db.RevokeRefreshToken(context.Background(), token)
+
+	respondWithError(w, 204, "")
 }
 
 func filterProfanity(body string) string {
