@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -35,7 +37,7 @@ func CheckPasswordHash(password, hash string) error {
 	return nil
 }
 
-func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+func MakeJWT(userID uuid.UUID, tokenSecret string) (string, error) {
 
 	//Create a variable to hold the "claims"—the standard fields about the token and user.
 	var newClaims jwt.RegisteredClaims
@@ -48,9 +50,9 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	timeNow.Time = time.Now().UTC()
 	newClaims.IssuedAt = &timeNow
 
-	// Set the ExpiresAt field to a future moment (current time plus however long you want it to last).
+	// Set the ExpiresAt field to a future moment (current time plus one hour).
 	var expireTime jwt.NumericDate
-	expireTime.Time = time.Now().Add(expiresIn).UTC()
+	expireTime.Time = time.Now().Add(time.Hour).UTC()
 	newClaims.ExpiresAt = &expireTime
 
 	// Store the user’s ID (converted to string) in the Subject field.
@@ -138,4 +140,15 @@ func GetBearerToken(headers http.Header) (string, error) {
 		return "", fmt.Errorf("invalid token")
 	}
 	return token, nil
+}
+
+func MakeRefreshToken() (string, error) {
+	// generate a random 256-bit (32-byte) hex-encoded string:
+	randomData := make([]byte, 32)
+	_, err := rand.Read(randomData)
+	if err != nil {
+		return "", fmt.Errorf("error generating random data: %w", err)
+	}
+
+	return hex.EncodeToString(randomData), nil
 }

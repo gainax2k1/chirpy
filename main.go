@@ -33,12 +33,14 @@ type apiConfig struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
+
 type Chirp struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
@@ -48,9 +50,8 @@ type Chirp struct {
 }
 
 type CreateUserRequest struct {
-	Email      string `json:"email"`
-	Password   string `json:"password"`
-	ExpireTime int    `json:"expires_in_seconds"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type CreateChirp struct {
@@ -259,12 +260,6 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 		respondWithError(w, 500, "Error decoding params")
 		return
 	}
-	fmt.Println("Decoded login parameters:", userLoginParams) // debug
-	if userLoginParams.ExpireTime == 0 || userLoginParams.ExpireTime > 3600 {
-		userLoginParams.ExpireTime = 3600 //one hour
-	}
-
-	expires := time.Duration(userLoginParams.ExpireTime) * time.Second
 
 	dbUserRecord, err := cfg.db.GetUserByEmail(context.Background(), userLoginParams.Email)
 	if err != nil {
@@ -280,7 +275,7 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 	}
 
 	fmt.Println("Password hash check error:", err) // after password check debug
-	token, err := auth.MakeJWT(dbUserRecord.ID, cfg.secret, expires)
+	token, err := auth.MakeJWT(dbUserRecord.ID, cfg.secret)
 	fmt.Println("JWT created:", token, "JWT creation error:", err) // after JWT creation
 
 	//token, err := auth.GetBearerToken(req.Header) // WRONG
@@ -288,13 +283,31 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 		respondWithError(w, 401, "Unauthorized")
 		return
 	}
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, 500, "error creating refresh token") // possibly 401?
+		return
+	}
+
+	newRefreshTokenParams := database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 60), // 60 days
+		UserID:    dbUserRecord.ID,
+	}
+
+	_, err = cfg.db.CreateRefreshToken(context.Background(), newRefreshTokenParams)
+	if err != nil {
+		respondWithError(w, 500, "error creating refresh token in database")
+		return
+	}
 
 	mainUser := User{ // converting to ensure security (not exposing sql field names, allows not returning specific values, like potential password, etc)
-		ID:        dbUserRecord.ID,
-		CreatedAt: dbUserRecord.CreatedAt,
-		UpdatedAt: dbUserRecord.UpdatedAt,
-		Email:     dbUserRecord.Email,
-		Token:     token,
+		ID:           dbUserRecord.ID,
+		CreatedAt:    dbUserRecord.CreatedAt,
+		UpdatedAt:    dbUserRecord.UpdatedAt,
+		Email:        dbUserRecord.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 
 	jsonWriter(w, 200, mainUser)
