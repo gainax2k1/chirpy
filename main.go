@@ -134,6 +134,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", cfg.middlewareMetricsLoginUser)
 	mux.HandleFunc("POST /api/refresh", cfg.middlewareMetricsRefresh)
 	mux.HandleFunc("POST /api/revoke", cfg.middlewareMetricsRevoke)
+	mux.HandleFunc("PUT /api/users", cfg.middlewareMetricsUpdateUser)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -320,6 +321,69 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 
 	jsonWriter(w, 200, mainUser)
 	//return
+
+}
+
+func (cfg *apiConfig) middlewareMetricsUpdateUser(w http.ResponseWriter, req *http.Request) {
+
+	// DECODE JSON REQUEST BODY:
+
+	decoder := json.NewDecoder(req.Body)
+	updateUserParams := CreateUserRequest{}
+
+	err := decoder.Decode(&updateUserParams)
+	if err != nil {
+		respondWithError(w, 500, "Error decoding params")
+		return
+	}
+	// At this point, I have the user params (password and email)
+	// -- i need to verify token here
+
+	// getting user's token from header
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	userIDVerified, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	// at this point, i have the UUID for the token in  header.
+	// i need to... compare? to ... what?
+
+	// by now, user will need to have been verified correctly
+	updateUserParams.Password, err = auth.HashPassword(updateUserParams.Password)
+	if err != nil {
+		respondWithError(w, 500, "error creating password")
+
+		return
+	}
+
+	var updateDBUserParams database.UpdateUserParams
+	updateDBUserParams.Email = updateUserParams.Email
+	updateDBUserParams.HashedPassword = updateUserParams.Password
+	updateDBUserParams.ID = userIDVerified
+
+	updatedUserRecord, err := cfg.db.UpdateUser(context.Background(), updateDBUserParams)
+
+	if err != nil {
+		//error creating new user
+		respondWithError(w, 500, "error creating user")
+		return
+	}
+	updatedUserInfo := User{
+		ID:        updatedUserRecord.ID,
+		CreatedAt: updatedUserRecord.CreatedAt,
+		UpdatedAt: updatedUserRecord.UpdatedAt,
+		Email:     updatedUserRecord.Email,
+	}
+
+	//
+	jsonWriter(w, 200, updatedUserInfo)
 
 }
 
