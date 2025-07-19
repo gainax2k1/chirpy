@@ -16,3 +16,8 @@ SELECT *
 SELECT *
     FROM chirps
     WHERE ID = $1;
+
+-- name: DeleteChirpByChirpUUID :exec
+DELETE
+    FROM chirps
+    WHERE ID = $1;

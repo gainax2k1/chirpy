@@ -135,6 +135,7 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", cfg.middlewareMetricsRefresh)
 	mux.HandleFunc("POST /api/revoke", cfg.middlewareMetricsRevoke)
 	mux.HandleFunc("PUT /api/users", cfg.middlewareMetricsUpdateUser)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.middlewareMetricsDeleteChirp)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -474,6 +475,66 @@ func (cfg *apiConfig) middlewareMetricsGetChirp(w http.ResponseWriter, req *http
 
 }
 
+func (cfg *apiConfig) middlewareMetricsDeleteChirp(w http.ResponseWriter, req *http.Request) {
+	// DECODE JSON REQUEST BODY:
+	/* delete requests don't contain a request body!
+	decoder := json.NewDecoder(req.Body)
+	updateUserParams := CreateUserRequest{}
+
+	err := decoder.Decode(&updateUserParams)
+	if err != nil {
+		respondWithError(w, 500, "Error decoding params")
+		return
+	}
+
+	*/
+	// At this point, I have the user params (password and email)
+	// -- i need to verify token here
+
+	// getting user's token from header
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	userIDVerified, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	chirpIDString := req.PathValue("chirpID") // pulls the chirp id from the path string as a STRING
+	fmt.Println(chirpIDString)
+
+	chirpUUID, err := uuid.Parse(chirpIDString) // converts the string into a UUID
+	if err != nil {
+		respondWithError(w, 500, "UUID error")
+		return
+	}
+	dbChirp, err := cfg.db.GetChirpByChirpUUID(context.Background(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 404, "chirp not found")
+		return
+	}
+	if dbChirp.UserID != userIDVerified {
+		respondWithError(w, 403, "UserID does not match Chirp author userID")
+		return
+	}
+
+	// verified user (by token) is confirmed creator of chirp, proced to attemp to remove
+
+	err = cfg.db.DeleteChirpByChirpUUID(context.Background(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 500, "err deleting chirp")
+		return
+	}
+
+	// everything worked as expected
+	w.WriteHeader(204)
+
+}
+
 func (cfg *apiConfig) middlewareMetricsGetChirps(w http.ResponseWriter, req *http.Request) {
 	chirpsSlice, err := cfg.db.GetChirps(context.Background())
 	if err != nil {
@@ -542,7 +603,9 @@ func (cfg *apiConfig) middlewareMetricsRevoke(w http.ResponseWriter, req *http.R
 	}
 	cfg.db.RevokeRefreshToken(context.Background(), token)
 
-	respondWithError(w, 204, "")
+	w.WriteHeader(204)
+
+	//respondWithError(w, 204, "")
 }
 
 func filterProfanity(body string) string {
