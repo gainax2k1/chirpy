@@ -132,33 +132,27 @@ func main() {
 	// after adding readiness():
 
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
-
-	// similar to above, but for URLs that start with "/assets"
-	// -- my initial, not-quite-there implimentation:
-	// mux.Handle("/assets", http.FileServer(http.Dir("./assets")))
-	// -- this ONLY catches urls ending with ".../assets", and anything else like "../assets/chirp.png"
-	//    WON'T be caught. The following is the robust version that handles it correctly
-
-	// suggested, more robust implimentation:
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("./assets"))))
 
-	// old: mux.HandleFunc("/healthz", readiness(http.ResponseWriter, *http.Request)) WRONG!
-	// new:
 	mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsHandlerReset)
 	mux.HandleFunc("GET /api/healthz", readiness) // correct!
-	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats)
-	//mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset) //old reset that reset the page view counter
-	//mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate) // old seperate validate case
+	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats
+)
 	mux.HandleFunc("POST /api/chirps", cfg.createChirps)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.deleteChirp)
 	mux.HandleFunc("GET /api/chirps", cfg.getChirps)
-	mux.HandleFunc("POST /api/users", cfg.createUser)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.getChirp)
+	
+	mux.HandleFunc("POST /api/users", cfg.createUser)
 	mux.HandleFunc("POST /api/login", cfg.loginUser)
 	mux.HandleFunc("POST /api/refresh", cfg.refresh)
 	mux.HandleFunc("POST /api/revoke", cfg.revoke)
 	mux.HandleFunc("PUT /api/users", cfg.updateUser)
-	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.deleteChirp)
-	mux.HandleFunc("POST /api/polka/webhooks", cfg.userEvents)
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.userEvents) // so far, upgrading to "chirpy red"
+
+	//mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset) //old reset that reset the page view counter
+	//mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate) // old seperate validate case
+
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -174,6 +168,7 @@ func main() {
 // "*http.Request" includes things like the HTTP method (GET, POST, etc.),
 // the URL path, headers, and the request body (if there is one).
 // The server also creates this for you for each incoming request.
+
 func readiness(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8") // normal header
 	w.WriteHeader(200)                                          // status code
@@ -183,22 +178,22 @@ func readiness(w http.ResponseWriter, req *http.Request) {
 
 func (cfg *apiConfig) middlewareMetricsHandlerReset(w http.ResponseWriter, req *http.Request) { // **** UNDER CONSTRUCTION! ****
 	if cfg.platform != "dev" {
-		// 403 Forbidden
 		respondWithError(w, 403, "Forbidden")
 		return
 	}
+
 	err := cfg.db.Reset(context.Background())
 	if err != nil {
 		respondWithError(w, 400, "Bad Request")
 	}
+
 	fmt.Printf("Database successfully reset.")
-	//return
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	/*
-		THIS DOESN'T WORK! it only runs ONCE at startup!
-		- cfg.fileserverHits.Add(1) // should increment by 1 safely
+		THIS WONT'T WORK! it only runs ONCE at startup!
+		- cfg.fileserverHits.Add(1) 
 		- return next
 	*/
 	//correct code: we return our modified hanlder at startup.
@@ -240,7 +235,6 @@ func (cfg *apiConfig) middlewareMetricsStats(w http.ResponseWriter, req *http.Re
 */
 
 func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
-	// DECODE JSON REQUEST BODY:
 
 	decoder := json.NewDecoder(req.Body)
 	newUserParams := CreateUserRequest{}
@@ -250,6 +244,7 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 		respondWithError(w, 500, "Error decoding params")
 		return
 	}
+
 	newUserParams.Password, err = auth.HashPassword(newUserParams.Password)
 	if err != nil {
 		respondWithError(w, 500, "error creating password")
@@ -259,9 +254,7 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 	var createUserParams database.CreateUserParams
 	createUserParams.Email = newUserParams.Email
 	createUserParams.HashedPassword = newUserParams.Password
-
 	newUserRecord, err := cfg.db.CreateUser(context.Background(), createUserParams)
-
 	if err != nil {
 		//error creating new user
 		respondWithError(w, 500, "error creating user")
@@ -277,16 +270,11 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	jsonWriter(w, 201, mainUser)
-	//return
 }
 
 func (cfg *apiConfig) loginUser(w http.ResponseWriter, req *http.Request) {
-
-	// DECODE JSON REQUEST BODY:
-
 	decoder := json.NewDecoder(req.Body)
-	userLoginParams := CreateUserRequest{}                    // struct with email and password
-	fmt.Println("Decoded login parameters:", userLoginParams) // debug
+	userLoginParams := CreateUserRequest{} // struct with email and password
 	err := decoder.Decode(&userLoginParams)
 	if err != nil {
 		respondWithError(w, 500, "Error decoding params")
@@ -299,25 +287,20 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	fmt.Println("Database user lookup error:", err) // after DB lookup debug
 	err = auth.CheckPasswordHash(userLoginParams.Password, dbUserRecord.HashedPassword)
 	if err != nil {
 		respondWithError(w, 401, "Unauthorized (checkpasswordhash failed)")
 		return
 	}
 
-	fmt.Println("Password hash check error:", err) // after password check debug
 	token, err := auth.MakeJWT(dbUserRecord.ID, cfg.secret)
-	fmt.Println("JWT created:", token, "JWT creation error:", err) // after JWT creation
-
-	//token, err := auth.GetBearerToken(req.Header) // WRONG
 	if err != nil {
 		respondWithError(w, 401, "Unauthorized")
 		return
 	}
 	refreshToken, err := auth.MakeRefreshToken()
 	if err != nil {
-		respondWithError(w, 500, "error creating refresh token") // possibly 401?
+		respondWithError(w, 500, "error creating refresh token") 
 		return
 	}
 
@@ -346,14 +329,9 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	jsonWriter(w, 200, mainUser)
-	//return
-
 }
 
 func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
-
-	// DECODE JSON REQUEST BODY:
-
 	decoder := json.NewDecoder(req.Body)
 	updateUserParams := CreateUserRequest{}
 
@@ -362,9 +340,9 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 		respondWithError(w, 500, "Error decoding params")
 		return
 	}
+
 	// At this point, I have the user params (password and email)
 	// -- i need to verify token here
-
 	// getting user's token from header
 	token, err := auth.GetBearerToken(req.Header)
 	if err != nil {
@@ -379,8 +357,7 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// at this point, i have the UUID for the token in  header.
-	// i need to... compare? to ... what?
-
+	
 	// by now, user will need to have been verified correctly
 	updateUserParams.Password, err = auth.HashPassword(updateUserParams.Password)
 	if err != nil {
@@ -401,6 +378,7 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 		respondWithError(w, 500, "error creating user")
 		return
 	}
+	
 	updatedUserInfo := User{
 		ID:          updatedUserRecord.ID,
 		CreatedAt:   updatedUserRecord.CreatedAt,
@@ -409,14 +387,10 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 		IsChirpyRed: updatedUserRecord.IsChirpyRed,
 	}
 
-	//
 	jsonWriter(w, 200, updatedUserInfo)
-
 }
 
 func (cfg *apiConfig) userEvents(w http.ResponseWriter, req *http.Request) {
-	// DECODE JSON REQUEST BODY:
-
 	decoder := json.NewDecoder(req.Body)
 	params := userEvent{}
 
@@ -436,22 +410,16 @@ func (cfg *apiConfig) userEvents(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	dbUserRecord, err := cfg.db.UpgradeUser(context.Background(), params.Data.User_ID)
+	_, err := cfg.db.UpgradeUser(context.Background(), params.Data.User_ID)
 	if err != nil {
 		// if err == sql.ErrNoRows {} for explicitely checking user not found (row not found)
 		w.WriteHeader(404) // for now, assuming any error will be user not found
 		return
 	}
-	//debug code
-	fmt.Println(dbUserRecord)
-
 	w.WriteHeader(204)
 }
 
 func (cfg *apiConfig) createChirps(w http.ResponseWriter, req *http.Request) {
-
-	// DECODE JSON REQUEST BODY:
-
 	decoder := json.NewDecoder(req.Body)
 	params := CreateChirp{}
 
@@ -461,13 +429,11 @@ func (cfg *apiConfig) createChirps(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// params is a struct with data populated successfully
 	token, err := auth.GetBearerToken(req.Header)
 	if err != nil {
 		respondWithError(w, 401, "Unauthorized")
 		return
 	}
-
 	userIDVerified, err := auth.ValidateJWT(token, cfg.secret)
 	if err != nil {
 		respondWithError(w, 401, "Unauthorized")
@@ -475,8 +441,6 @@ func (cfg *apiConfig) createChirps(w http.ResponseWriter, req *http.Request) {
 	}
 
 	characterCount := len(params.Body)
-
-	fmt.Printf("Character count using len: %v", characterCount)
 
 	// ENCODE JSON RESPONSE BODY:
 
@@ -504,7 +468,6 @@ func (cfg *apiConfig) createChirps(w http.ResponseWriter, req *http.Request) {
 	}
 
 	jsonWriter(w, 201, mainChirp)
-	//return
 }
 
 func (cfg *apiConfig) getChirp(w http.ResponseWriter, req *http.Request) {
@@ -532,25 +495,10 @@ func (cfg *apiConfig) getChirp(w http.ResponseWriter, req *http.Request) {
 	}
 
 	jsonWriter(w, 200, mainChirp)
-
 }
 
 func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
-	// DECODE JSON REQUEST BODY:
-	/* delete requests don't contain a request body!
-	decoder := json.NewDecoder(req.Body)
-	updateUserParams := CreateUserRequest{}
-
-	err := decoder.Decode(&updateUserParams)
-	if err != nil {
-		respondWithError(w, 500, "Error decoding params")
-		return
-	}
-
-	*/
-	// At this point, I have the user params (password and email)
-	// -- i need to verify token here
-
+	// delete requests don't contain a request body!
 	// getting user's token from header
 	token, err := auth.GetBearerToken(req.Header)
 	if err != nil {
@@ -590,9 +538,7 @@ func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// everything worked as expected
 	w.WriteHeader(204)
-
 }
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
@@ -664,8 +610,6 @@ func (cfg *apiConfig) revoke(w http.ResponseWriter, req *http.Request) {
 	cfg.db.RevokeRefreshToken(context.Background(), token)
 
 	w.WriteHeader(204)
-
-	//respondWithError(w, 204, "")
 }
 
 func filterProfanity(body string) string {
