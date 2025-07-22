@@ -152,3 +152,26 @@ func MakeRefreshToken() (string, error) {
 
 	return hex.EncodeToString(randomData), nil
 }
+
+func GetAPIKey(headers http.Header) (string, error) {
+	apiKeyStringHeader := headers.Get("Authorization") // get the first item with this key
+	if apiKeyStringHeader == "" {
+		return "", fmt.Errorf("unable to retrieve authorization header")
+	}
+
+	apiKeyStringHeader = strings.TrimSpace(apiKeyStringHeader) // trim leading whitespace
+
+	if !strings.HasPrefix(apiKeyStringHeader, "ApiKey ") { // checks for proper header leader.
+		//  Note, "space" after ApiKey to make sure that's all that's there
+		return "", fmt.Errorf("invalid authorization header")
+
+	}
+
+	token := strings.TrimPrefix(apiKeyStringHeader, "ApiKey")
+
+	token = strings.TrimSpace(token)
+	if len(token) < 30 {
+		return "", fmt.Errorf("invalid apikey")
+	}
+	return token, nil
+}

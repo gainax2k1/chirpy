@@ -30,6 +30,7 @@ type apiConfig struct {
 	*/
 	platform string
 	secret   string
+	polkaKey string
 }
 
 type User struct {
@@ -39,6 +40,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -67,6 +69,24 @@ type tokenResponse struct {
 	Token string `json:"token"`
 }
 
+type userData struct {
+	User_ID uuid.UUID `json:"user_id"`
+}
+
+type userEvent struct {
+	Event string   `json:"event"`
+	Data  userData `json:"data"`
+}
+
+/*
+{
+  "event": "user.upgraded",
+  "data": {
+    "user_id": "3311741c-680c-4546-99f3-fc9efac2036c"
+  }
+}
+*/
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -76,6 +96,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
 	secret := os.Getenv("SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println("error opening sql: ", err)
@@ -90,6 +111,7 @@ func main() {
 		db:       dbQueries,
 		platform: platform,
 		secret:   secret,
+		polkaKey: polkaKey,
 	}
 
 	// This creates a "multiplexer"—a router for incoming HTTP requests.
@@ -127,15 +149,16 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats)
 	//mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset) //old reset that reset the page view counter
 	//mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate) // old seperate validate case
-	mux.HandleFunc("POST /api/chirps", cfg.middlewareMetricsCreateChirps)
-	mux.HandleFunc("GET /api/chirps", cfg.middlewareMetricsGetChirps)
-	mux.HandleFunc("POST /api/users", cfg.middlewareMetricsCreateUser)
-	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.middlewareMetricsGetChirp)
-	mux.HandleFunc("POST /api/login", cfg.middlewareMetricsLoginUser)
-	mux.HandleFunc("POST /api/refresh", cfg.middlewareMetricsRefresh)
-	mux.HandleFunc("POST /api/revoke", cfg.middlewareMetricsRevoke)
-	mux.HandleFunc("PUT /api/users", cfg.middlewareMetricsUpdateUser)
-	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.middlewareMetricsDeleteChirp)
+	mux.HandleFunc("POST /api/chirps", cfg.createChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.getChirps)
+	mux.HandleFunc("POST /api/users", cfg.createUser)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.getChirp)
+	mux.HandleFunc("POST /api/login", cfg.loginUser)
+	mux.HandleFunc("POST /api/refresh", cfg.refresh)
+	mux.HandleFunc("POST /api/revoke", cfg.revoke)
+	mux.HandleFunc("PUT /api/users", cfg.updateUser)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.deleteChirp)
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.userEvents)
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -216,7 +239,7 @@ func (cfg *apiConfig) middlewareMetricsStats(w http.ResponseWriter, req *http.Re
 }
 */
 
-func (cfg *apiConfig) middlewareMetricsCreateUser(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 	// DECODE JSON REQUEST BODY:
 
 	decoder := json.NewDecoder(req.Body)
@@ -246,17 +269,18 @@ func (cfg *apiConfig) middlewareMetricsCreateUser(w http.ResponseWriter, req *ht
 	}
 
 	mainUser := User{ // converting to ensure security (not exposing sql field names, allows not returning specific values, like potential password, etc)
-		ID:        newUserRecord.ID,
-		CreatedAt: newUserRecord.CreatedAt,
-		UpdatedAt: newUserRecord.UpdatedAt,
-		Email:     newUserRecord.Email,
+		ID:          newUserRecord.ID,
+		CreatedAt:   newUserRecord.CreatedAt,
+		UpdatedAt:   newUserRecord.UpdatedAt,
+		Email:       newUserRecord.Email,
+		IsChirpyRed: newUserRecord.IsChirpyRed,
 	}
 
 	jsonWriter(w, 201, mainUser)
 	//return
 }
 
-func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) loginUser(w http.ResponseWriter, req *http.Request) {
 
 	// DECODE JSON REQUEST BODY:
 
@@ -318,6 +342,7 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 		Email:        dbUserRecord.Email,
 		Token:        token,
 		RefreshToken: refreshToken,
+		IsChirpyRed:  dbUserRecord.IsChirpyRed,
 	}
 
 	jsonWriter(w, 200, mainUser)
@@ -325,7 +350,7 @@ func (cfg *apiConfig) middlewareMetricsLoginUser(w http.ResponseWriter, req *htt
 
 }
 
-func (cfg *apiConfig) middlewareMetricsUpdateUser(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 
 	// DECODE JSON REQUEST BODY:
 
@@ -377,10 +402,11 @@ func (cfg *apiConfig) middlewareMetricsUpdateUser(w http.ResponseWriter, req *ht
 		return
 	}
 	updatedUserInfo := User{
-		ID:        updatedUserRecord.ID,
-		CreatedAt: updatedUserRecord.CreatedAt,
-		UpdatedAt: updatedUserRecord.UpdatedAt,
-		Email:     updatedUserRecord.Email,
+		ID:          updatedUserRecord.ID,
+		CreatedAt:   updatedUserRecord.CreatedAt,
+		UpdatedAt:   updatedUserRecord.UpdatedAt,
+		Email:       updatedUserRecord.Email,
+		IsChirpyRed: updatedUserRecord.IsChirpyRed,
 	}
 
 	//
@@ -388,7 +414,41 @@ func (cfg *apiConfig) middlewareMetricsUpdateUser(w http.ResponseWriter, req *ht
 
 }
 
-func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) userEvents(w http.ResponseWriter, req *http.Request) {
+	// DECODE JSON REQUEST BODY:
+
+	decoder := json.NewDecoder(req.Body)
+	params := userEvent{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, "Error decoding params")
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil || apiKey != cfg.polkaKey {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	dbUserRecord, err := cfg.db.UpgradeUser(context.Background(), params.Data.User_ID)
+	if err != nil {
+		// if err == sql.ErrNoRows {} for explicitely checking user not found (row not found)
+		w.WriteHeader(404) // for now, assuming any error will be user not found
+		return
+	}
+	//debug code
+	fmt.Println(dbUserRecord)
+
+	w.WriteHeader(204)
+}
+
+func (cfg *apiConfig) createChirps(w http.ResponseWriter, req *http.Request) {
 
 	// DECODE JSON REQUEST BODY:
 
@@ -447,7 +507,7 @@ func (cfg *apiConfig) middlewareMetricsCreateChirps(w http.ResponseWriter, req *
 	//return
 }
 
-func (cfg *apiConfig) middlewareMetricsGetChirp(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) getChirp(w http.ResponseWriter, req *http.Request) {
 	chirpIDString := req.PathValue("chirpID") // pulls the chirp id from the path string as a STRING
 	fmt.Println(chirpIDString)
 
@@ -475,7 +535,7 @@ func (cfg *apiConfig) middlewareMetricsGetChirp(w http.ResponseWriter, req *http
 
 }
 
-func (cfg *apiConfig) middlewareMetricsDeleteChirp(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
 	// DECODE JSON REQUEST BODY:
 	/* delete requests don't contain a request body!
 	decoder := json.NewDecoder(req.Body)
@@ -535,7 +595,7 @@ func (cfg *apiConfig) middlewareMetricsDeleteChirp(w http.ResponseWriter, req *h
 
 }
 
-func (cfg *apiConfig) middlewareMetricsGetChirps(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
 	chirpsSlice, err := cfg.db.GetChirps(context.Background())
 	if err != nil {
 		respondWithError(w, 500, "error retrieving chirps")
@@ -558,7 +618,7 @@ func (cfg *apiConfig) middlewareMetricsGetChirps(w http.ResponseWriter, req *htt
 	jsonWriter(w, 200, chirpsMainSlice)
 }
 
-func (cfg *apiConfig) middlewareMetricsRefresh(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) refresh(w http.ResponseWriter, req *http.Request) {
 	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
 	if err != nil {
 		respondWithError(w, 401, "unable to refresh token")
@@ -595,7 +655,7 @@ func (cfg *apiConfig) middlewareMetricsRefresh(w http.ResponseWriter, req *http.
 	jsonWriter(w, 200, returnJWTToken)
 }
 
-func (cfg *apiConfig) middlewareMetricsRevoke(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) revoke(w http.ResponseWriter, req *http.Request) {
 	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
 	if err != nil {
 		respondWithError(w, 401, "unable to refresh token")
