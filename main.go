@@ -136,13 +136,12 @@ func main() {
 
 	mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsHandlerReset)
 	mux.HandleFunc("GET /api/healthz", readiness) // correct!
-	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats
-)
+	mux.HandleFunc("GET /admin/metrics", cfg.middlewareMetricsStats)
 	mux.HandleFunc("POST /api/chirps", cfg.createChirps)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.deleteChirp)
 	mux.HandleFunc("GET /api/chirps", cfg.getChirps)
-	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.getChirp)
-	
+	mux.HandleFunc("GET /api/chirp/{chirpID}", cfg.getChirp)
+
 	mux.HandleFunc("POST /api/users", cfg.createUser)
 	mux.HandleFunc("POST /api/login", cfg.loginUser)
 	mux.HandleFunc("POST /api/refresh", cfg.refresh)
@@ -152,7 +151,6 @@ func main() {
 
 	//mux.HandleFunc("POST /admin/reset", cfg.middlewareMetricsReset) //old reset that reset the page view counter
 	//mux.HandleFunc("POST /api/validate_chirp", cfg.middlewareMetricsValidate) // old seperate validate case
-
 
 	// starts your server and keeps it running, handling incoming HTTP requests as per your routing rules.
 	err = newServer.ListenAndServe()
@@ -193,7 +191,7 @@ func (cfg *apiConfig) middlewareMetricsHandlerReset(w http.ResponseWriter, req *
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	/*
 		THIS WONT'T WORK! it only runs ONCE at startup!
-		- cfg.fileserverHits.Add(1) 
+		- cfg.fileserverHits.Add(1)
 		- return next
 	*/
 	//correct code: we return our modified hanlder at startup.
@@ -300,7 +298,7 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, req *http.Request) {
 	}
 	refreshToken, err := auth.MakeRefreshToken()
 	if err != nil {
-		respondWithError(w, 500, "error creating refresh token") 
+		respondWithError(w, 500, "error creating refresh token")
 		return
 	}
 
@@ -357,7 +355,7 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// at this point, i have the UUID for the token in  header.
-	
+
 	// by now, user will need to have been verified correctly
 	updateUserParams.Password, err = auth.HashPassword(updateUserParams.Password)
 	if err != nil {
@@ -378,7 +376,7 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 		respondWithError(w, 500, "error creating user")
 		return
 	}
-	
+
 	updatedUserInfo := User{
 		ID:          updatedUserRecord.ID,
 		CreatedAt:   updatedUserRecord.CreatedAt,
@@ -410,12 +408,57 @@ func (cfg *apiConfig) userEvents(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	_, err := cfg.db.UpgradeUser(context.Background(), params.Data.User_ID)
+	_, err = cfg.db.UpgradeUser(context.Background(), params.Data.User_ID)
 	if err != nil {
 		// if err == sql.ErrNoRows {} for explicitely checking user not found (row not found)
-		w.WriteHeader(404) // for now, assuming any error will be user not found
+		w.WriteHeader(204)
+	}
+}
+
+func (cfg *apiConfig) refresh(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
 		return
 	}
+
+	refreshTokenRecord, err := cfg.db.GetUserByRefreshToken(context.Background(), token)
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	if refreshTokenRecord.ExpiresAt.Compare(time.Now()) < 0 {
+		//revoke call () //not implimented yet
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+	if refreshTokenRecord.RevokedAt.Valid {
+		//revoke call () //not implimented yet
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	jwtToken, err := auth.MakeJWT(refreshTokenRecord.UserID, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+
+	returnJWTToken := tokenResponse{
+		Token: jwtToken,
+	}
+
+	jsonWriter(w, 200, returnJWTToken)
+}
+func (cfg *apiConfig) revoke(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
+	if err != nil {
+		respondWithError(w, 401, "unable to refresh token")
+		return
+	}
+	cfg.db.RevokeRefreshToken(context.Background(), token)
+
 	w.WriteHeader(204)
 }
 
@@ -542,10 +585,33 @@ func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
-	chirpsSlice, err := cfg.db.GetChirps(context.Background())
-	if err != nil {
-		respondWithError(w, 500, "error retrieving chirps")
-		return
+
+	authorID := req.URL.Query().Get("author_id")
+	// s is a string that contains the value of the author_id query parameter
+	// if it exists, or an empty string if it doesn't
+	var chirpsSlice []database.Chirp
+
+	if len(authorID) == 0 {
+		chirpsSlice, err := cfg.db.GetChirps(context.Background())
+		if err != nil {
+			respondWithError(w, 500, "error retrieving chirps")
+			return
+		}
+		if len(chirpsSlice) == 0 {
+			respondWithError(w, 500, "no chirps found")
+		}
+	} else {
+		authorUUID, err := uuid.Parse(authorID) // converts the string into a UUID
+		if err != nil {
+			respondWithError(w, 500, "UUID error")
+			return
+		}
+		chirpsSlice, err = cfg.db.GetChirpsByAuthorID(context.Background(), authorUUID)
+		if err != nil {
+			respondWithError(w, 500, "error retrieving chirps")
+			return
+		}
+
 	}
 
 	var chirpsMainSlice []Chirp
@@ -562,54 +628,6 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
 
 	}
 	jsonWriter(w, 200, chirpsMainSlice)
-}
-
-func (cfg *apiConfig) refresh(w http.ResponseWriter, req *http.Request) {
-	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
-	if err != nil {
-		respondWithError(w, 401, "unable to refresh token")
-		return
-	}
-
-	refreshTokenRecord, err := cfg.db.GetUserByRefreshToken(context.Background(), token)
-	if err != nil {
-		respondWithError(w, 401, "unable to refresh token")
-		return
-	}
-
-	if refreshTokenRecord.ExpiresAt.Compare(time.Now()) < 0 {
-		//revoke call () //not implimented yet
-		respondWithError(w, 401, "unable to refresh token")
-		return
-	}
-	if refreshTokenRecord.RevokedAt.Valid {
-		//revoke call () //not implimented yet
-		respondWithError(w, 401, "unable to refresh token")
-		return
-	}
-
-	jwtToken, err := auth.MakeJWT(refreshTokenRecord.UserID, cfg.secret)
-	if err != nil {
-		respondWithError(w, 401, "unable to refresh token")
-		return
-	}
-
-	returnJWTToken := tokenResponse{
-		Token: jwtToken,
-	}
-
-	jsonWriter(w, 200, returnJWTToken)
-}
-
-func (cfg *apiConfig) revoke(w http.ResponseWriter, req *http.Request) {
-	token, err := auth.GetBearerToken(req.Header) //getting refresh token from user
-	if err != nil {
-		respondWithError(w, 401, "unable to refresh token")
-		return
-	}
-	cfg.db.RevokeRefreshToken(context.Background(), token)
-
-	w.WriteHeader(204)
 }
 
 func filterProfanity(body string) string {

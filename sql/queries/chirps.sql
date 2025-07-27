@@ -21,3 +21,9 @@ SELECT *
 DELETE
     FROM chirps
     WHERE ID = $1;
+
+-- name: GetChirpsByAuthorID :many
+SELECT *
+    FROM chirps
+    WHERE user_id = $1
+    ORDER BY chirps.created_at ASC;
