@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -585,14 +586,17 @@ func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
-
+	var err error // declared to avoid scope issues with error catching later
 	authorID := req.URL.Query().Get("author_id")
 	// s is a string that contains the value of the author_id query parameter
 	// if it exists, or an empty string if it doesn't
+
+	sortType := req.URL.Query().Get("sort")
+
 	var chirpsSlice []database.Chirp
 
 	if len(authorID) == 0 {
-		chirpsSlice, err := cfg.db.GetChirps(context.Background())
+		chirpsSlice, err = cfg.db.GetChirps(context.Background())
 		if err != nil {
 			respondWithError(w, 500, "error retrieving chirps")
 			return
@@ -612,6 +616,17 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+	}
+	if sortType == "desc" {
+		sort.Slice(chirpsSlice, func(i, j int) bool {
+			compareVal := chirpsSlice[i].CreatedAt.Compare(chirpsSlice[j].CreatedAt)
+			return compareVal > 0
+		})
+	} else {
+		sort.Slice(chirpsSlice, func(i, j int) bool {
+			compareVal := chirpsSlice[i].CreatedAt.Compare(chirpsSlice[j].CreatedAt)
+			return compareVal < 0
+		})
 	}
 
 	var chirpsMainSlice []Chirp
